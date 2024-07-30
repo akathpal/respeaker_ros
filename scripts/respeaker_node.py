@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
 # -*- coding: utf-8 -*-
 # Author: furushchev <furushchev@jsk.imi.i.u-tokyo.ac.jp>
 
@@ -19,18 +20,18 @@ from audio_common_msgs.msg import AudioData
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, Int32, ColorRGBA
 from dynamic_reconfigure.server import Server
+
 try:
     from pixel_ring import usb_pixel_ring_v2
 except IOError as e:
-    print e
+    print(e)
     raise RuntimeError("Check the device is connected and recognized")
 
 try:
     from respeaker_ros.cfg import RespeakerConfig
 except Exception as e:
-    print e
+    print(e)
     raise RuntimeError("Need to run respeaker_gencfg.py first")
-
 
 # suppress error messages from ALSA
 # https://stackoverflow.com/questions/7088672/pyaudio-working-but-spits-out-error-messages-each-time
@@ -54,7 +55,6 @@ def ignore_stderr(enable=True):
                 os.close(devnull)
     else:
         yield
-
 
 # Partly copied from https://github.com/respeaker/usb_4_mic_array
 # parameter list
@@ -169,7 +169,7 @@ class RespeakerInterface(object):
             usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
             0, cmd, id, length, self.TIMEOUT)
 
-        response = struct.unpack(b'ii', response.tostring())
+        response = struct.unpack(b'ii', response.tobytes())
 
         if data[2] == 'int':
             result = response[0]
@@ -230,7 +230,7 @@ class RespeakerAudio(object):
         rospy.logdebug("%d audio devices found" % count)
         for i in range(count):
             info = self.pyaudio.get_device_info_by_index(i)
-            name = info["name"].encode("utf-8")
+            name = info["name"]
             chan = info["maxInputChannels"]
             rospy.logdebug(" - %d: %s" % (i, name))
             if name.lower().find("respeaker") >= 0:
@@ -248,9 +248,9 @@ class RespeakerAudio(object):
             rospy.logwarn("%d channel is found for respeaker" % self.available_channels)
             rospy.logwarn("You may have to update firmware.")
         if self.channels is None:
-            self.channels = range(self.available_channels)
+            self.channels = list(range(self.available_channels))
         else:
-            self.channels = filter(lambda c: 0 <= c < self.available_channels, self.channels)
+            self.channels = [c for c in self.channels if 0 <= c < self.available_channels]
         if not self.channels:
             raise RuntimeError('Invalid channels %s. (Available channels are %s)' % (
                 self.channels, self.available_channels))
@@ -281,13 +281,13 @@ class RespeakerAudio(object):
 
     def stream_callback(self, in_data, frame_count, time_info, status):
         # split channel
-        data = np.fromstring(in_data, dtype=np.int16)
-        chunk_per_channel = len(data) / self.available_channels
+        data = np.frombuffer(in_data, dtype=np.int16)
+        chunk_per_channel = len(data) // self.available_channels
         data = np.reshape(data, (chunk_per_channel, self.available_channels))
         for chan in self.channels:
             chan_data = data[:, chan]
             # invoke callback
-            self.on_audio(chan_data.tostring(), chan)
+            self.on_audio(chan_data.tobytes(), chan)
         return None, pyaudio.paContinue
 
     def start(self):
@@ -315,7 +315,7 @@ class RespeakerNode(object):
         #
         self.respeaker = RespeakerInterface()
         self.respeaker_audio = RespeakerAudio(self.on_audio, suppress_error=suppress_pyaudio_error)
-        self.speech_audio_buffer = str()
+        self.speech_audio_buffer = b''
         self.is_speeching = False
         self.speech_stopped = rospy.Time(0)
         self.prev_is_voice = None
@@ -326,14 +326,14 @@ class RespeakerNode(object):
         self.pub_doa = rospy.Publisher("sound_localization", PoseStamped, queue_size=1, latch=True)
         self.pub_audio = rospy.Publisher("audio", AudioData, queue_size=10)
         self.pub_speech_audio = rospy.Publisher("speech_audio", AudioData, queue_size=10)
-        self.pub_audios = {c:rospy.Publisher('audio/channel%d' % c, AudioData, queue_size=10) for c in self.respeaker_audio.channels}
+        self.pub_audios = {c: rospy.Publisher('audio/channel%d' % c, AudioData, queue_size=10) for c in self.respeaker_audio.channels}
         # init config
         self.config = None
         self.dyn_srv = Server(RespeakerConfig, self.on_config)
         # start
         self.speech_prefetch_bytes = int(
             self.speech_prefetch * self.respeaker_audio.rate * self.respeaker_audio.bitdepth / 8.0)
-        self.speech_prefetch_buffer = str()
+        self.speech_prefetch_buffer = b''
         self.respeaker_audio.start()
         self.info_timer = rospy.Timer(rospy.Duration(1.0 / self.update_rate),
                                       self.on_timer)
@@ -373,8 +373,8 @@ class RespeakerNode(object):
         if self.timer_led and self.timer_led.is_alive():
             self.timer_led.shutdown()
         self.timer_led = rospy.Timer(rospy.Duration(3.0),
-                                       lambda e: self.respeaker.set_led_trace(),
-                                       oneshot=True)
+                                     lambda e: self.respeaker.set_led_trace(),
+                                     oneshot=True)
 
     def on_audio(self, data, channel):
         self.pub_audios[channel].publish(AudioData(data=data))
@@ -425,13 +425,12 @@ class RespeakerNode(object):
             self.is_speeching = True
         elif self.is_speeching:
             buf = self.speech_audio_buffer
-            self.speech_audio_buffer = str()
+            self.speech_audio_buffer = b''
             self.is_speeching = False
             duration = 8.0 * len(buf) * self.respeaker_audio.bitwidth
             duration = duration / self.respeaker_audio.rate / self.respeaker_audio.bitdepth
             rospy.loginfo("Speech detected for %.3f seconds" % duration)
             if self.speech_min_duration <= duration < self.speech_max_duration:
-
                 self.pub_speech_audio.publish(AudioData(data=buf))
 
 
